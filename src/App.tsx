@@ -3,7 +3,7 @@ import { Callout, Caption, Closing, FileCard, Group, Header } from './ui';
 import { useLocalStorage } from './useLocalStorage';
 import { defaultConfig, solve, solveMaxRest, type Config, type Person, type Task } from './engine';
 
-type TaskRow = { name: string; req: number; allDay: boolean; from: string; to: string; shiftLen: number; daysText: string };
+type TaskRow = { name: string; req: number; allDay: boolean; from: string; to: string; shiftLen: number; daysText: string; restBefore?: number; restAfter?: number };
 
 const SAMPLE_PEOPLE = `דנה: 3,4,5
 יוסי: 8,9
@@ -24,7 +24,7 @@ const SAMPLE_PEOPLE = `דנה: 3,4,5
 const SAMPLE_TASKS: TaskRow[] = [
     { name: 'שער', req: 2, allDay: true, from: '00:00', to: '00:00', shiftLen: 8, daysText: '' },
     { name: 'חמ"ל', req: 1, allDay: true, from: '00:00', to: '00:00', shiftLen: 8, daysText: '' },
-    { name: 'סיור לילה', req: 1, allDay: false, from: '22:00', to: '06:00', shiftLen: 8, daysText: '' },
+    { name: 'סיור לילה', req: 1, allDay: false, from: '22:00', to: '06:00', shiftLen: 8, daysText: '', restBefore: 4, restAfter: 10 },
     { name: 'משימה חד-פעמית', req: 2, allDay: false, from: '14:00', to: '17:30', shiftLen: 3.5, daysText: '4' },
 ];
 const WEEKDAYS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
@@ -52,6 +52,7 @@ export function App() {
         name: t.name.trim(), req: Math.max(1, Math.min(10, t.req || 1)), shiftLen: Math.max(0.5, t.shiftLen || 8),
         from: t.allDay ? 0 : hh(t.from), to: t.allDay ? 24 : (hh(t.to) === hh(t.from) ? hh(t.from) + 24 : hh(t.to)),
         days: t.daysText.trim() ? t.daysText.split(/[ ,]+/).map((x) => parseInt(x, 10) - 1).filter((x) => !isNaN(x)) : undefined,
+        restBefore: Math.max(0, Math.min(72, t.restBefore || 0)), restAfter: Math.max(0, Math.min(72, t.restAfter || 0)),
     })).map((t) => ({ ...t, to: t.to > 24 && t.from === 0 && !t.days ? 24 : t.to })), [taskRows]);
     const result = useMemo(() => (people.length && tasks.length ? (maxRest ? solveMaxRest(cfg, people, tasks) : solve(cfg, people, tasks)) : null),
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -77,9 +78,12 @@ export function App() {
                             <label className="rp-sm">עד <input className="rp-i" type="time" value={t.to} onChange={(e) => upd(i, { to: e.target.value })} /></label></>}
                         <label className="rp-sm">אורך משמרת (שעות) <input className="rp-i rp-n" type="number" min={0.5} max={24} step={0.5} value={t.shiftLen} onChange={(e) => upd(i, { shiftLen: +e.target.value })} /></label>
                         <label className="rp-sm">ימים <input className="rp-i rp-d" placeholder="הכול" value={t.daysText} onChange={(e) => upd(i, { daysText: e.target.value })} /></label>
+                        <label className="rp-sm">מנוחה חובה לפני (שעות) <input className="rp-i rp-n" type="number" min={0} max={72} step={0.5} value={t.restBefore ?? 0} onChange={(e) => upd(i, { restBefore: +e.target.value })} /></label>
+                        <label className="rp-sm">מנוחה חובה אחרי (שעות) <input className="rp-i rp-n" type="number" min={0} max={72} step={0.5} value={t.restAfter ?? 0} onChange={(e) => upd(i, { restAfter: +e.target.value })} /></label>
                         <button className="file-button is-compact" data-variant="secondary" onClick={() => setTaskRows((r) => r.filter((_, j) => j !== i))}>הסר</button>
                     </div>)}
-                    <button className="file-button is-compact" data-variant="secondary" onClick={() => setTaskRows((r) => [...r, { name: 'משימה חדשה', req: 1, allDay: false, from: '08:00', to: '16:00', shiftLen: 8, daysText: '' }])}>הוסף משימה</button>
+                    <button className="file-button is-compact" data-variant="secondary" onClick={() => setTaskRows((r) => [...r, { name: 'משימה חדשה', req: 1, allDay: false, from: '08:00', to: '16:00', shiftLen: 8, daysText: '', restBefore: 0, restAfter: 0 }])}>הוסף משימה</button>
+                    <p className="rp-sm">מנוחה לפני/אחרי היא חובה, לא העדפה. בין משימה א' למשימה ב' של אותו אדם נדרש הפער הגדול מבין: המנוחה אחרי א', המנוחה לפני ב', והמנוחה המינימלית הכללית (לא סכום שלהן). אם אי אפשר לכסות הכול בלי להפר את הדרישות, לא יוצג שיבוץ תקין.</p>
                 </div>
                 <div className="rp-grid">
                     <label className="rp-l">ימים בלוח<input className="rp-i" type="number" min={1} max={31} value={cfg.days} onChange={(e) => set('days', Math.max(1, Math.min(31, +e.target.value || 1)))} /></label>
@@ -108,7 +112,7 @@ export function App() {
                 return <>
                     <Group label="תוצאה" heading>
                         {valid
-                            ? <Callout title="שיבוץ תקין: כל המשימות מכוסות במלואן">{`נבדק בנפרד: אף אחד לא משובץ ביום שהוא לא בבסיס, אין חפיפות, ואין מנוחה קצרה מ-${result.minRestUsed} שעות.`}</Callout>
+                            ? <Callout title="שיבוץ תקין: כל המשימות מכוסות במלואן">{`נבדק בנפרד: אף אחד לא משובץ ביום שהוא לא בבסיס, אין חפיפות, ובין כל שתי משמרות של אותו אדם נשמר הפער הנדרש - הגדול מבין המינימום הכללי (${result.minRestUsed} שעות) ודרישות המנוחה לפני/אחרי של המשימות.`}</Callout>
                             : <Callout title="אין שיבוץ תקין: הכיסוי אינו מלא" tone="warning">{result.feasibility === 'proven-infeasible' ? `הוכח שאי אפשר לכסות עם הנתונים האלה: ${result.reason}.` : `${result.reason || 'נמצאו הפרות של כללים.'} חסרות ${result.uncovered} עמדות.`} השיבוץ החלקי למטה אינו תקין ואין להשתמש בו. אפשר ללחוץ "שיבוץ חלופי", להוסיף אנשים או לקצר את המנוחה המינימלית.</Callout>}
                         {valid && isFinite(minRest) && <p className="rp-sm">{`המנוחה הקצרה ביותר בין שתי משמרות של אותו אדם: ${Math.round(minRest * 10) / 10} שעות. זו תוצאה של חיפוש היוריסטי: ייתכן ששיבוץ עם יותר מנוחה קיים ולא נמצא.`}</p>}
                         {valid ? grid : <details><summary>הצג שיבוץ חלקי (לא תקין)</summary>{grid}</details>}
@@ -121,7 +125,7 @@ export function App() {
                     </Group>}
                 </>;
             })()}
-            <Closing>לא נשמר ולא נשלח כלום מהדף הזה. עדיין לא מוגדר: מגבלות ימים רצופים, כשירויות לפי משימה, ותאריכים מדויקים (כרגע מספרי ימים בלוח).</Closing>
+            <Closing>לא נשמר ולא נשלח כלום מהדף הזה. מנוחה לפני המשמרת הראשונה בלוח ואחרי המשמרת האחרונה לא נבדקת, כי אין נתוני שיבוץ מחוץ ללוח. עדיין לא מוגדר: מגבלות ימים רצופים, כשירויות לפי משימה, ותאריכים מדויקים (כרגע מספרי ימים בלוח).</Closing>
         </div>
     </FileCard>;
 }
