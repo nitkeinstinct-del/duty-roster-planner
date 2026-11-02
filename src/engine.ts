@@ -4,7 +4,11 @@
 export type Person = { name: string; leave: number[] }; // leave = day indexes the person is NOT at base (input only)
 // A task runs inside a clock window each active day, cut into shifts of shiftLen hours.
 // from=0,to=24 on every day = continuous 24/7. to <= from means the window crosses midnight (e.g. 22 -> 6).
-export type Task = { name: string; req: number; from: number; to: number; days?: number[]; shiftLen: number };
+// restBefore/restAfter: hard hours of rest a person must have immediately BEFORE starting / AFTER finishing
+// a shift of this task. Between two consecutive shifts the required gap is the LARGER of the previous
+// task's restAfter, the next task's restBefore and the global cfg.minRest - never their sum.
+// Rest before the first shift of the horizon and after the last one is NOT checked (no data outside it).
+export type Task = { name: string; req: number; from: number; to: number; days?: number[]; shiftLen: number; restBefore?: number; restAfter?: number };
 export type Config = {
     days: number;
     minRest: number; // hard: hours off between two shifts of the same person
@@ -58,6 +62,10 @@ function rng(seed: number) {
     return () => { s = (s + 0x6d2b79f5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 const gapBetween = (a: Slot, b: Slot) => (a.start <= b.start ? b.start - a.end : a.start - b.end);
+/** Hard gap between two CONSECUTIVE shifts (earlier ends before later starts) of one person: the larger of
+ *  the earlier task's restAfter, the later task's restBefore and the global minimum. Directional. */
+export const requiredGap = (cfg: Config, tasks: Task[], earlier: Slot, later: Slot) =>
+    Math.max(cfg.minRest, tasks[earlier.task].restAfter ?? 0, tasks[later.task].restBefore ?? 0);
 function onLeave(p: Person, s: { start: number; end: number }) {
     for (let d = Math.floor(s.start / 24); d <= Math.floor((s.end - 1e-9) / 24); d++) if (p.leave.includes(d)) return true;
     return false;
@@ -74,7 +82,11 @@ export function validate(cfg: Config, people: Person[], tasks: Task[], slots: Sl
     });
     per.forEach((list, p) => {
         list.sort((a, b) => a.start - b.start);
-        for (let i = 1; i < list.length; i++) { const g = list[i].start - list[i - 1].end; if (g < cfg.minRest - 1e-9) v.push(`${people[p].name}: מנוחה ${g}h < ${cfg.minRest}h לפני יום ${list[i].day + 1}`); }
+        for (let i = 1; i < list.length; i++) {
+            const g = list[i].start - list[i - 1].end;
+            const req = requiredGap(cfg, tasks, list[i - 1], list[i]);
+            if (g < req - 1e-9) v.push(`${people[p].name}: מנוחה ${g}h < ${req}h הנדרשת בין "${tasks[list[i - 1].task].name}" ל-"${tasks[list[i].task].name}" לפני יום ${list[i].day + 1}`);
+        }
     });
     return v;
 }
@@ -119,8 +131,10 @@ export function solve(cfg: Config, people: Person[], tasks: Task[]): Result {
         if (onLeave(people[p], s) || assign[slotId].includes(p)) return false;
         for (let i = 0; i < slots.length; i++) {
             if (i === slotId || !assign[i].includes(p)) continue;
-            if (slots[i].start > s.end + cfg.minRest + 1 || slots[i].end < s.start - cfg.minRest - 1) continue;
-            if (gapBetween(slots[i], s) < cfg.minRest - 1e-9) return false;
+            const o = slots[i];
+            const req = o.start <= s.start ? requiredGap(cfg, tasks, o, s) : requiredGap(cfg, tasks, s, o);
+            if (o.start > s.end + req + 1 || o.end < s.start - req - 1) continue;
+            if (gapBetween(o, s) < req - 1e-9) return false;
         }
         return true;
     };
@@ -156,7 +170,7 @@ export function solve(cfg: Config, people: Person[], tasks: Task[]): Result {
             if (!canTake(ob, a.slot) || !canTake(old, b.slot)) { assign[a.slot][a.k] = old; assign[b.slot][b.k] = ob; continue; }
             assign[a.slot][a.k] = ob; assign[b.slot][b.k] = old;
             // the pair check above ignores a<->b interaction; reject if they now clash
-            const clash = (x: number, y: number) => { const p = assign[x].includes(old) && assign[y].includes(old); return p && gapBetween(slots[x], slots[y]) < cfg.minRest - 1e-9; };
+            const clash = (x: number, y: number) => { const p = assign[x].includes(old) && assign[y].includes(old); if (!p) return false; const [e, l] = slots[x].start <= slots[y].start ? [slots[x], slots[y]] : [slots[y], slots[x]]; return l.start - e.end < requiredGap(cfg, tasks, e, l) - 1e-9; };
             const nc = clash(a.slot, b.slot) ? Infinity : cost();
             if (nc <= cur || rand() < Math.exp((cur - nc) / T)) cur = nc; else { assign[a.slot][a.k] = old; assign[b.slot][b.k] = ob; }
         }
@@ -191,9 +205,10 @@ export function feasibility(cfg: Config, people: Person[], tasks: Task[], slots:
         if (need > free) return { f: 'proven-infeasible', reason: `ביום ${s.day + 1} נדרשים ${need} אנשים במקביל ורק ${free} בבסיס` };
     }
     const minLen = Math.min(...slots.map(dur));
-    const perPersonMax = Math.floor((cfg.days * 24 + cfg.minRest) / (minLen + cfg.minRest));
+    const gapFloor = Math.max(cfg.minRest, Math.min(...tasks.map((t) => t.restAfter ?? 0)), Math.min(...tasks.map((t) => t.restBefore ?? 0)));
+    const perPersonMax = Math.floor((cfg.days * 24 + gapFloor) / (minLen + gapFloor));
     const demand = slots.reduce((n, s) => n + tasks[s.task].req, 0);
-    if (demand > people.length * perPersonMax) return { f: 'proven-infeasible', reason: `סך העמדות הנדרשות (${demand}) גדול מהמקסימום האפשרי (${people.length * perPersonMax}) כשמנוחה מינימלית היא ${cfg.minRest} שעות` };
+    if (demand > people.length * perPersonMax) return { f: 'proven-infeasible', reason: `סך העמדות הנדרשות (${demand}) גדול מהמקסימום האפשרי (${people.length * perPersonMax}) כשהמנוחה המינימלית בין משמרות היא ${gapFloor} שעות (כולל דרישות מנוחה של משימות)` };
     return { f: 'not-found', reason: 'החיפוש לא מצא שיבוץ מלא, אבל זה לא הוכחה שאין כזה' };
 }
 
@@ -223,7 +238,7 @@ export function bruteForce(cfg: Config, people: Person[], tasks: Task[]): { cost
         const l: Slot[] = []; slots.forEach((s, i) => { if (assign[i].includes(p)) l.push(s); });
         l.sort((a, b) => a.start - b.start);
         for (const s of l) if (onLeave(people[p], s)) return false;
-        for (let i = 1; i < l.length; i++) if (l[i].start - l[i - 1].end < cfg.minRest - 1e-9) return false;
+        for (let i = 1; i < l.length; i++) if (l[i].start - l[i - 1].end < requiredGap(cfg, tasks, l[i - 1], l[i]) - 1e-9) return false;
         return true;
     };
     const rec = (i: number) => {
