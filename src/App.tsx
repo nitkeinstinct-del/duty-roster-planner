@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { Callout, Caption, Closing, FileCard, Group, Header, useLocalState } from '@instinct/files';
-import './style.css';
+import { Callout, Caption, Closing, FileCard, Group, Header } from './ui';
+import { useLocalStorage } from './useLocalStorage';
 import { defaultConfig, solve, solveMaxRest, type Config, type Person, type Task } from './engine';
 
 type TaskRow = { name: string; req: number; allDay: boolean; from: string; to: string; shiftLen: number; daysText: string };
@@ -40,7 +40,7 @@ function parsePeople(t: string): Person[] {
 
 export function App() {
     type Saved = { peopleText: string; taskRows: TaskRow[]; maxRest: boolean; cfg: Config };
-    const [st, setSt, saved] = useLocalState<Saved>('roster-input.v1', { peopleText: SAMPLE_PEOPLE, taskRows: SAMPLE_TASKS, maxRest: true, cfg: { ...defaultConfig } });
+    const [st, setSt, saved] = useLocalStorage<Saved>('roster-input.v1', { peopleText: SAMPLE_PEOPLE, taskRows: SAMPLE_TASKS, maxRest: true, cfg: { ...defaultConfig } });
     const { peopleText, taskRows, maxRest, cfg } = st;
     const edit = (patch: Partial<Saved>) => { if (saved.ready) setSt({ ...st, ...patch }); };
     const setPeople = (v: string) => edit({ peopleText: v });
