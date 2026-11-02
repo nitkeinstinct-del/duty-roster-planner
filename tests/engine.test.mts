@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { solve, bruteForce, validate, defaultConfig, buildSlots, type Person, type Task } from '../src/engine.ts';
 
-import { solveMaxRest, nightHours, dur } from '../src/engine.ts';
+import { solveMaxRest, nightHours, dur, requiredGap } from '../src/engine.ts';
 let n = 0; const ok = (name: string, f: () => void) => { f(); n++; console.log('ok -', name); };
 const mk = (k: number): Person[] => Array.from({ length: k }, (_, i) => ({ name: 'P' + (i + 1), leave: [] }));
 const T = (name: string, req: number, from = 0, to = 24, shiftLen = 8, days?: number[]): Task => ({ name, req, from, to, shiftLen, days });
@@ -64,5 +64,79 @@ ok('heuristic vs exhaustive optimum on a tiny instance', () => {
     const opt = bruteForce(cfg, people, tasks)!; const h = solve(cfg, people, tasks);
     console.log(`   optimum cost ${opt.cost.toFixed(3)}, heuristic cost ${h.cost.toFixed(3)}`);
     assert.ok(h.cost >= opt.cost - 1e-9); assert.ok(h.cost <= opt.cost + 1e-6);
+});
+ok('requiredGap: larger of prev restAfter, next restBefore, global minRest - directional, never a sum', () => {
+    const cfg = { ...defaultConfig, minRest: 8 };
+    const tasks: Task[] = [
+        { name: 'A', req: 1, from: 8, to: 16, shiftLen: 8, restAfter: 10 },
+        { name: 'B', req: 1, from: 18, to: 24, shiftLen: 6, restBefore: 4 },
+    ];
+    const slots = buildSlots({ ...cfg, days: 1 }, tasks);
+    const [a, b] = slots;
+    assert.equal(requiredGap(cfg, tasks, a, b), 10); // max(8, 10, 4)
+    assert.equal(requiredGap(cfg, tasks, b, a), 8);  // reversed direction: max(8, B.restAfter=0, A.restBefore=0)
+    assert.equal(requiredGap({ ...cfg, minRest: 20 }, tasks, a, b), 20); // global floor still applies
+    const plain: Task[] = [T('X', 1), T('Y', 1)];
+    const s2 = buildSlots({ ...cfg, days: 1 }, plain);
+    assert.equal(requiredGap(cfg, plain, s2[0], s2[1]), 8); // tasks without rest fields = old behaviour
+});
+
+ok('rest-after is enforced: validate flags a too-short gap and clears when the requirement drops', () => {
+    const cfg = { ...defaultConfig, days: 1, minRest: 0 };
+    const mk = (restAfter: number): Task[] => [
+        { name: 'A', req: 1, from: 8, to: 16, shiftLen: 8, restAfter },
+        { name: 'B', req: 1, from: 18, to: 24, shiftLen: 6 },
+    ];
+    let tasks = mk(10);
+    let slots = buildSlots(cfg, tasks);
+    let v = validate(cfg, [{ name: 'P1', leave: [] }], tasks, slots, [[0], [0]]);
+    assert.equal(v.length, 1); assert.ok(v[0].includes('10'));
+    tasks = mk(2);
+    v = validate(cfg, [{ name: 'P1', leave: [] }], tasks, slots, [[0], [0]]);
+    assert.deepEqual(v, []); // gap 2h >= restAfter 2h
+});
+
+ok('rest values do not add up: gap 8h passes restAfter 6 + restBefore 6 (larger-of only)', () => {
+    const cfg = { ...defaultConfig, days: 2, minRest: 0 };
+    const tasks: Task[] = [
+        { name: 'A', req: 1, from: 8, to: 16, shiftLen: 8, restAfter: 6, days: [0] },
+        { name: 'B', req: 1, from: 24, to: 6, shiftLen: 6, restBefore: 6, days: [0] }, // slot 24-30
+    ];
+    const slots = buildSlots(cfg, tasks);
+    assert.equal(slots.length, 2);
+    assert.equal(slots[1].start - slots[0].end, 8);
+    assert.deepEqual(validate(cfg, [{ name: 'P1', leave: [] }], tasks, slots, [[0], [0]]), []); // sum would be 12
+});
+
+ok('rest-before applies across midnight (window crossing into the next day)', () => {
+    const cfg = { ...defaultConfig, days: 2, minRest: 0 };
+    const mk = (restBefore: number): Task[] => [
+        { name: 'Day', req: 1, from: 8, to: 20, shiftLen: 12, days: [0] },
+        { name: 'Night', req: 1, from: 22, to: 6, shiftLen: 8, restBefore, days: [0] }, // slot 22-30
+    ];
+    let tasks = mk(6);
+    const slots = buildSlots(cfg, tasks);
+    let v = validate(cfg, [{ name: 'P1', leave: [] }], tasks, slots, [[0], [0]]);
+    assert.equal(v.length, 1); // gap 2h < restBefore 6h
+    tasks = mk(2);
+    v = validate(cfg, [{ name: 'P1', leave: [] }], tasks, slots, [[0], [0]]);
+    assert.deepEqual(v, []);
+});
+
+ok('solver respects per-task rest-after on a 24/7 task and still covers fully', () => {
+    const cfg = { ...defaultConfig, days: 2, minRest: 0 };
+    const tasks: Task[] = [{ name: 'Gate', req: 1, from: 0, to: 24, shiftLen: 8, restAfter: 12 }];
+    const r = solve(cfg, [{ name: 'P1', leave: [] }, { name: 'P2', leave: [] }, { name: 'P3', leave: [] }], tasks);
+    assert.equal(r.feasibility, 'full'); assert.deepEqual(r.violations, []);
+    assert.deepEqual(validate(cfg, [{ name: 'P1', leave: [] }, { name: 'P2', leave: [] }, { name: 'P3', leave: [] }], tasks, r.slots, r.assign), []);
+    const mg = Math.min(...r.stats.map((s) => s.minGap ?? 99));
+    assert.ok(mg >= 12, `min gap ${mg} < 12`);
+});
+
+ok('per-task rest feeds the counting proof: too few people with big rest-after is proven infeasible', () => {
+    const cfg = { ...defaultConfig, days: 3, minRest: 0 };
+    const tasks: Task[] = [{ name: 'Gate', req: 1, from: 0, to: 24, shiftLen: 8, restAfter: 12 }];
+    const r = solve(cfg, [{ name: 'P1', leave: [] }, { name: 'P2', leave: [] }], tasks);
+    assert.equal(r.feasibility, 'proven-infeasible'); assert.ok(r.reason.includes('12'));
 });
 console.log(n + ' tests passed');
