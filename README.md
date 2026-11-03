@@ -11,7 +11,7 @@ calls POST /api/solve. All roster computation runs in a Python server process;
 there is no Pyodide or browser solver in that UI. GET /api/health returns
 `{"ok": true, "engine": "python-server"}`. The Python engine remains in
 public/roster_engine.py. The inherited src/ directory is the old browser variant
-and is not used by the server deployment. The updated UI source is ui-source.zip.
+and is not used by the server deployment. The updated UI source is 3-ui-source.zip.
 Rebuild that source with npm ci and npm run build, then regenerate the embedded
 UI in server.py using embed-ui.py. No Node build is needed on Render.
 
@@ -40,4 +40,4 @@ blocked by a CAPTCHA. No payment has been authorized.
 
 ## Tests
 python3 tests/test_engine.py (17 existing engine tests).
-python3 tests/test_server.py (API validation, static UI, timeout/busy/error paths).
+python3 tests/test_server.py (five API validation and HTTP tests in the source archive).
