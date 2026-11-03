@@ -1,46 +1,43 @@
-# Duty roster planner (prototype) - `python-engine` branch
+# Duty roster prototype: Python server variant
 
-Hebrew (RTL) web app that builds a duty roster. Runs entirely in the browser. Fictional sample data only.
+This branch preserves the other live sites and adds a separate server deployment.
+Run `python3 server.py` with Python 3.10+ (no external packages). It binds to
+0.0.0.0 on PORT (default 8000). In Render select branch `server-engine`, Python,
+Free instance, build command `true`, start command `python3 server.py`.
+No database, persistent disk or paid service is required.
 
-**This branch replaces the TypeScript scheduling engine with a Python one.** The UI is the same React
-app, but there is no TypeScript solver here at all: every roster is computed by
-`public/roster_engine.py`, running inside [Pyodide](https://pyodide.org/) (CPython compiled to
-WebAssembly) in a module web worker (`public/pyworker.mjs`). Pyodide v314.0.7 is loaded from the jsDelivr CDN,
-so the FIRST load needs an internet connection (a few MB, cached afterwards). If the Python engine
-fails to load or run, the app shows an explicit error - it never silently falls back to another solver.
-The deployed site on `main` is unchanged and still uses the TypeScript engine.
+`server.py` serves a compressed, prebuilt React UI embedded in the file. Its UI
+calls POST /api/solve. All roster computation runs in a Python server process;
+there is no Pyodide or browser solver in that UI. GET /api/health returns
+`{"ok": true, "engine": "python-server"}`. The Python engine remains in
+public/roster_engine.py. The inherited src/ directory is the old browser variant
+and is not used by the server deployment. The updated UI source is ui-source.zip.
+Rebuild that source with npm ci and npm run build, then regenerate the embedded
+UI in server.py using embed-ui.py. No Node build is needed on Render.
 
-## What it does
-- Plans only people who are at the base. Days a person is not at base are an input; the app does not decide leave.
-- Tasks: 24/7 continuous, a clock window (from/to, may cross midnight, e.g. 22:00-06:00), or one-off on specific days. Each task has people per shift and a shift length.
-- Per-task mandatory rest: each task can require hours of rest before it starts and after it ends. Between two consecutive shifts of the same person the required gap is the LARGER of the previous task's rest-after, the next task's rest-before and the global minimum rest - never their sum. This is a hard rule checked by the independent validator, like leave and overlap.
-- Full coverage is mandatory. A partial roster is shown as INVALID and never as a result.
-- After coverage, it maximises the minimum rest between shifts for each person, with a fairness slider.
-- "Proven infeasible" is shown only when a counting argument proves it. Otherwise the app says the search did not find a full roster, which is not proof that none exists.
+## Boundaries
+This is an experimental heuristic, not a proven-optimal or operational system.
+Only fictional sample data is appropriate. Full coverage, presence, no overlap,
+and max(previous rest-after, next rest-before, global rest) remain hard rules.
+There is no rest validation outside the schedule horizon. Night and one-off
+windows, fairness and leave inputs follow the existing Python engine.
 
-## Method (honest limits)
-Greedy construction plus simulated annealing, with a separate hard-rule validator - same algorithm as
-`main`, ported line by line. This is a heuristic. It does not prove that a roster is optimal for
-fairness or rest, and the Python port does not change that.
-Shift windows are cut into fixed-length shifts; there are no limits on consecutive days and no per-task qualifications yet.
-Rest before the first shift of the horizon and after the last shift is NOT checked: the planner has no data about duties outside the planned days, so those edges cannot be verified.
-The port keeps the per-person cost cached and incremental (instead of rebuilding it on every move) so
-the annealing loop stays fast enough in interpreted WebAssembly Python; the cost function and the
-constraint semantics are identical to `main`.
+Inputs are saved in browser localStorage and sent over HTTPS to Render for each
+calculation. Application code does not persist input or output or log their
+contents. Hosting-provider infrastructure may process traffic and metadata.
+No login or multi-device sync is implemented. Do not enter real personnel or
+operational information. This public endpoint can be used by anyone.
 
-## Run
-Needs Node 22.6 or newer for the UI, and Python 3 for the engine tests (standard library only).
+The API rejects malformed fields rather than truncating names or changing dates.
+Limits: 256 KiB body, 31 days, 200 people, 100 tasks, 2000 shifts, 5000 positions,
+80000 iterations. Two concurrent calculations, no waiting queue; each computation
+is terminated after 45 seconds. Oversized requests receive an error, not a partial
+valid result. This is basic prototype protection, not a production security audit.
 
-    npm ci
-    npm run dev        # local dev server
-    npm run build      # typecheck + production build into dist/
-    npm test           # Python engine tests (python3 tests/test_engine.py)
+Render free instances sleep after 15 idle minutes and can take roughly one minute
+to wake: https://render.com/docs/free . Deployment is not yet live: signup was
+blocked by a CAPTCHA. No payment has been authorized.
 
-## Data and persistence
-Input is saved in this browser's localStorage under the key `roster-input.v1` (see `src/useLocalStorage.ts`). It is never sent anywhere, is not synced between devices, and is lost if browser data is cleared. Use fictional names or nicknames, not real personnel data.
-
-## Deployment
-There is intentionally **no** `.github/workflows/deploy.yml` on this branch, so pushing or dispatching
-here can never deploy to GitHub Pages. The live site <https://nitkeinstinct-del.github.io/duty-roster-planner/>
-is deployed from `main` only. To try this branch, run it locally (`npm run dev`, or `npm run build`
-and serve `dist/` with any static file server).
+## Tests
+python3 tests/test_engine.py (17 existing engine tests).
+python3 tests/test_server.py (API validation, static UI, timeout/busy/error paths).
